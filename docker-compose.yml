@@ -1,0 +1,16 @@
+version: "3.8"
+
+services:
+  backend:
+    build: .
+    ports:
+      - "8000:8000"
+
+  ui:
+    image: python:3.10
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: streamlit run ui/streamlit_app.py
+    ports:
+      - "8501:8501"

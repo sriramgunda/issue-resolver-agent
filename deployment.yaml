@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: access-agent
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: access-agent
+  template:
+    metadata:
+      labels:
+        app: access-agent
+    spec:
+      containers:
+      - name: backend
+        image: access-agent:latest
+        ports:
+        - containerPort: 8000
