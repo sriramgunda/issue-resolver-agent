@@ -17,9 +17,9 @@ def classify_intent(query: str) -> IntentOutput:
     Query: {query}
 
     Options:
-    - access_issue
-    - account_locked
-    - password_reset
+    - access issue
+    - account locked
+    - password reset
     - unknown
 
     Return JSON with intent and confidence.
@@ -29,10 +29,11 @@ def classify_intent(query: str) -> IntentOutput:
 
     # For Local models - sometimes return messy output, so clean it
     text = response.content
+    print(text.strip())
 
     # Simple fallback parser
     if "locked" in query.lower():
-        return IntentOutput(intent="account_locked", confidence=0.8)
+        return IntentOutput(intent="account locked", confidence=0.8)
 
     # parsing results
     return IntentOutput(intent=text.strip(), confidence=response.confidence)
