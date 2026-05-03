@@ -1,5 +1,5 @@
 from langchain_core.tools import tool
-
+import random
 
 @tool
 def check_user_access(user_id: str, app: str) -> dict:
@@ -14,7 +14,8 @@ def check_user_access(user_id: str, app: str) -> dict:
         A dict with key 'has_access' (bool).
     """
     # Stubbed — replace with real DB / IAM call
-    return {"has_access": False}
+    sample_access = [True, False]
+    return {"has_access": random.choice(sample_access)}
 
 
 @tool
@@ -29,7 +30,8 @@ def check_account_locked(user_id: str) -> dict:
         A dict with key 'locked' (bool).
     """
     # Stubbed — replace with real identity-provider call
-    return {"locked": False}
+    sample_locked = [True, False]
+    return {"locked": random.choice(sample_locked)}
 
 
 @tool
@@ -43,7 +45,7 @@ def check_account_exists(user_id: str) -> dict:
     Returns:
         A dict with key 'exists' (bool).
     """
-    return {"exists": True}
+    return {"exists": random.choice([True, False])}
 
 
 @tool
@@ -59,4 +61,5 @@ def grant_access(user_id: str, app: str) -> dict:
         A dict with key 'status' set to 'granted'.
     """
     # Stubbed — replace with real IAM provisioning call
-    return {"status": "granted"}
+    sample_granted = ["granted", "denied"]
+    return {"status": random.choice(sample_granted)}

@@ -1,10 +1,23 @@
+# Web framework
 fastapi
-uvicorn
-langchain
-langchain-core
-langchain-community
-langchain-openai
-langchain-ollama
-pydantic
+uvicorn[standard]
+
+# LangChain 1.0
+langchain>=1.0.0
+langchain-core>=1.0.0
+langchain-ollama>=0.2.0
+langchain-community>=0.3.0
+
+# RAG — vector store + embeddings
+faiss-cpu
+sentence-transformers          # fallback embeddings when Ollama unavailable
+
+# Data validation
+pydantic>=2.0.0
+
+# UI
 streamlit
 requests
+
+# Utilities
+python-dotenv

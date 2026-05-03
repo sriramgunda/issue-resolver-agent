@@ -1,24 +1,23 @@
 """
-Access Resolver Agent — LangChain 1.0 tool-calling edition.
+Access Resolver Agent — LangChain 1.0 tool-calling edition with RAG.
 
 Uses:
-  • Ollama  (qwen2.5:7b) as the local LLM via langchain-ollama
-  • LangChain 1.0  create_agent  (replaces the deprecated
-    create_tool_calling_agent + AgentExecutor pattern)
-  • @tool-decorated functions for every side-effectful action
+  • Ollama (qwen2.5:7b) as the local LLM via langchain-ollama
+  • LangChain 1.0 create_agent (replaces deprecated AgentExecutor pattern)
+  • @tool-decorated functions for every action including RAG retrieval
 """
 
 import logging
 from typing import Any
 
 from langchain_ollama import ChatOllama
-from langchain.agents import create_agent          # LangChain 1.0 API
+from langchain.agents import create_agent
 
 from app.config import MODEL_NAME, OLLAMA_BASE_URL, TEMPERATURE
 from app.agent.prompts import SYSTEM_PROMPT
 from app.agent.utils import safe_parse
 
-# ── Tool imports (all decorated with @tool) ──────────────────────────────────
+# ── Tool imports ─────────────────────────────────────────────────────────────
 from app.tools.access_tools import (
     check_user_access,
     check_account_locked,
@@ -27,11 +26,13 @@ from app.tools.access_tools import (
 )
 from app.tools.ticketing_tools import create_ticket
 from app.tools.log_tools import query_logs
+from app.rag.retriever import search_knowledge_base   # ← RAG tool
 
 logger = logging.getLogger(__name__)
 
-# ── Tool registry ─────────────────────────────────────────────────────────────
+# ── Tool registry — RAG tool is listed FIRST so the agent tries it early ─────
 TOOLS = [
+    search_knowledge_base,      # RAG: check knowledge base before anything else
     check_account_exists,
     check_account_locked,
     check_user_access,
@@ -41,7 +42,6 @@ TOOLS = [
 ]
 
 
-# ── LLM factory ───────────────────────────────────────────────────────────────
 def _build_llm() -> ChatOllama:
     kwargs: dict[str, Any] = {
         "model": MODEL_NAME,
@@ -52,49 +52,38 @@ def _build_llm() -> ChatOllama:
     return ChatOllama(**kwargs)
 
 
-# ── Agent factory ─────────────────────────────────────────────────────────────
 def _build_agent():
     """
     Build a LangChain 1.0 agent using create_agent.
-
-    create_agent:
-      - Replaces the deprecated create_tool_calling_agent + AgentExecutor.
-      - Backed by a LangGraph graph for durability and streaming support.
-      - Accepts tools as plain @tool-decorated functions.
-      - system_prompt sets the agent's persona and resolution rules.
+    Backed by a LangGraph graph; handles tool-calling loop internally.
     """
-    llm = _build_llm()
-
     return create_agent(
-        model=llm,
+        model=_build_llm(),
         tools=TOOLS,
         system_prompt=SYSTEM_PROMPT,
     )
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
 def resolve_access(user_id: str, query: str) -> dict:
     """
     Entry point: resolve an access-related issue for *user_id*.
 
-    1. Builds a fresh create_agent instance.
-    2. Invokes it with the user query — the agent autonomously calls tools.
-    3. Parses the structured JSON summary from the agent's final output.
-    4. Returns a normalized dict for the FastAPI response model.
+    Flow:
+      1. Agent calls search_knowledge_base first.
+         - If a relevant FAQ answer is found → agent returns it directly.
+         - If NO_MATCH → agent proceeds to check account, access, logs, etc.
+      2. Parses the structured JSON summary from the agent's final output.
+      3. Returns a normalized dict for the FastAPI response model.
     """
     agent = _build_agent()
 
-    user_message = (
-        f"User ID: {user_id}\n"
-        f"Issue: {query}"
-    )
+    user_message = f"User ID: {user_id}\nIssue: {query}"
 
     try:
         result = agent.invoke(
             {"messages": [{"role": "user", "content": user_message}]}
         )
 
-        # Extract final assistant message from the messages list
         messages = result.get("messages", [])
         raw_output = ""
         for msg in reversed(messages):
@@ -111,28 +100,23 @@ def resolve_access(user_id: str, query: str) -> dict:
         logger.exception("Agent execution failed: %s", exc)
         parsed = {}
 
-    # Collect tool call names as the "steps" trace
-    steps = _extract_tool_steps(result.get("messages", []))
+    steps = _extract_tool_steps(result.get("messages", []) if "result" in dir() else [])
 
     return {
-        "intent":    parsed.get("intent", "unknown"),
-        "action":    parsed.get("action", "error"),
-        "result":    parsed.get("result", "Agent encountered an error — please retry."),
-        "ticket_id": parsed.get("ticket_id"),
-        "decision":  parsed.get("decision"),
+        "intent":     parsed.get("intent", "unknown"),
+        "action":     parsed.get("action", "error"),
+        "result":     parsed.get("result", "Agent encountered an error — please retry."),
+        "ticket_id":  parsed.get("ticket_id"),
+        "decision":   parsed.get("decision"),
         "confidence": parsed.get("confidence"),
-        "steps":     steps or parsed.get("steps"),
+        "steps":      steps or parsed.get("steps"),
     }
 
 
 def _extract_tool_steps(messages: list) -> list[str]:
-    """
-    Walk the message trace and collect each tool call name in order.
-    Gives the caller visibility into which tools the agent invoked.
-    """
+    """Collect tool call names in invocation order from the message trace."""
     steps = []
     for msg in messages:
-        # LangChain AIMessage with tool_calls attribute
         tool_calls = getattr(msg, "tool_calls", None)
         if tool_calls:
             for tc in tool_calls:

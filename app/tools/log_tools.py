@@ -1,5 +1,5 @@
 from langchain_core.tools import tool
-
+import random
 
 @tool
 def query_logs(user_id: str) -> dict:
@@ -14,7 +14,10 @@ def query_logs(user_id: str) -> dict:
         'reason' (machine-readable reason code, e.g. ROLE_MISSING).
     """
     # Stubbed — replace with real log aggregation (ELK, CloudWatch, etc.)
-    return {
-        "error": "ACCESS_DENIED",
-        "reason": "ROLE_MISSING",
-    }
+    sample_errors = [
+        {"error": "ACCESS_DENIED", "reason": "ROLE_MISSING"},
+        {"error": "ACCESS_DENIED", "reason": "ACCOUNT_LOCKED"},
+        {"error": "ACCESS_DENIED", "reason": "EXPIRED_CREDENTIALS"},
+        {"error": "ACCESS_DENIED", "reason": "NOT_PERMITTED"},
+    ]
+    return random.choice(sample_errors)
