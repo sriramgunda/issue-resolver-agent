@@ -1,11 +1,16 @@
-def check_user_access(user_id, app):
-    return {"has_access": False}
+from langchain_core.tools import tool
 
-def check_account_locked(user_id):
-    return {"locked": False}
+@tool
+def check_account_locked(user_id: str) -> str:
+    """Check if user account is locked"""
+    return "false"
 
-def check_account_exists(user_id):
-    return {"exists": True}
+@tool
+def check_user_access(user_id: str, app: str) -> str:
+    """Check if user has access to application"""
+    return "false"
 
-def grant_access(user_id, app):
-    return {"status": "granted"}
+@tool
+def grant_access(user_id: str, app: str) -> str:
+    """Grant access to user"""
+    return "Access granted successfully"

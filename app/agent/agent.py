@@ -1,77 +1,133 @@
-from langchain_ollama import ChatOllama
 #from langchain_community.chat_models import ChatOllama
-from app.config import MODEL_NAME, TEMPERATURE
-from app.agent.utils import safe_parse
+from langchain_ollama import ChatOllama
+from langchain.agents import create_agent
+from langchain_core.prompts import ChatPromptTemplate
+from app.config import MODEL_NAME, TEMPERATURE, OLLAMA_BASE_URL
 
-from app.tools.access_tools import *
-from app.tools.ticketing_tools import *
-from app.tools.log_tools import *
-from app.rag.retriever import retrieve_knowledge
+from app.tools.access_tools import (
+    check_account_locked,
+    check_user_access,
+    grant_access,
+)
 
-llm = ChatOllama(model=MODEL_NAME, temperature=TEMPERATURE)
+from app.tools.ticketing_tools import create_ticket
 
-def robust_llm_call(prompt, retries=2):
-    for _ in range(retries):
-        response = llm.invoke(prompt)
-        parsed = safe_parse(response.content)
+from app.agent.callbacks import ToolTrackingCallback
+from app.models.schemas import AgentResponse, AgentStep
 
-        if parsed.get("action") != "fallback":
-            return parsed
+# LLM (Open-source - Ollama)
+llm_kwargs = {"model": MODEL_NAME, "temperature": TEMPERATURE}
+if OLLAMA_BASE_URL:
+    llm_kwargs["base_url"] = OLLAMA_BASE_URL
 
-    return {"action": "fallback"}
+llm = ChatOllama(**llm_kwargs)
+
+# Tools list
+tools = [
+    check_account_locked,
+    check_user_access,
+    grant_access,
+    create_ticket
+]
+
+# Prompt
+messages = [
+    ("system", """
+You are an Access Resolver AI Agent.
+
+Rules:
+1. Always check if account is locked first.
+2. Then check access.
+3. If locked, stop and inform user.
+4. If no access, either grant access or create ticket.
+5. Use tools to perform actions.
+6. Do NOT guess, always call tools.
+
+STRICT RULES:
+- If account is locked, respond with "Account is locked. Please contact support."
+- If user has access, respond with "User has access."
+- If user does not have access, call grant_access tool. If successful, respond with "Access granted."
+- If grant_access fails, call create_ticket tool and respond with "Access issue. Ticket created."
+- Always return a clear final response based on the tool outputs.
+- If you cannot determine the intent, respond with "Unknown issue. Please contact support."
+- You MUST use tools. Do not answer without calling a tool.
+"""),
+    ("human", "{input}")
+]
+
+# Create agent
+#agent = create_tool_calling_agent(llm, tools, prompt)
+
+agent = create_agent(
+    model=llm,
+    tools=tools
+)
 
 def resolve_access(user_id: str, query: str):
+    input_text = f"user_id: {user_id}, query: {query}"
 
-    logs = query_logs(user_id)
-    knowledge = retrieve_knowledge(query)
+    callback = ToolTrackingCallback()
 
-    prompt = f"""
-    You are an Access Resolver AI Agent.
+    try:
+        response = agent.invoke(
+            input={"user_id": user_id, "query": query},
+            messages=messages,
+            callbacks=[callback]
+        )
+    except ValueError as e:
+        # Surface more actionable debugging info for Ollama streaming failures
+        msg = (
+            f"LLM invocation failed: {e}\n"
+            f"Model: {MODEL_NAME}\n"
+            f"OLLAMA_BASE_URL: {OLLAMA_BASE_URL}\n"
+            "Possible causes: Ollama server not running, model name incorrect, or network issues.\n"
+            "If you're using a local Ollama server, run: `ollama serve` and ensure the model exists."
+        )
+        print(msg)
+        raise
 
-    User Query: {query}
+    print("Final Response:", response)
 
-    Logs: {logs}
-    Knowledge: {knowledge}
+    # Decision inference (deterministic)
+    decision = "unknown"
+    ticket_id = None
 
-    Return STRICT JSON:
-    {{
-      "action": "grant_access | create_ticket | unlock_required",
-      "reason": "short explanation"
-    }}
-    """
+    for step in callback.steps:
+        if step["step"] == "create_ticket":
+            decision = "create_ticket"
+            ticket_id = step["details"]
+        elif step["step"] == "grant_access":
+            decision = "grant_access"
+        elif step["step"] == "check_account_locked" and "true" in step["details"]:
+            decision = "unlock_required"
 
-    #response = llm.invoke(prompt)
+    # fallback
+    if decision == "unknown":
+        decision = "manual_review"
 
-    #parsed = safe_parse(response.content)
-    parsed = robust_llm_call(prompt)
-    action = parsed.get("action", "fallback")
+    # 🔹 Build structured steps
+    steps = [
+        AgentStep(**s) for s in callback.steps
+    ]
 
-    # Deterministic execution layer
-    if action == "unlock_required":
-        return {
-            "action": action,
-            "result": "Account is locked"
-        }
+    # Confidence heuristic
+    confidence = 0.9 if decision != "manual_review" else 0.5
 
-    elif action == "grant_access":
-        grant_access(user_id, "app")
-        return {
-            "action": action,
-            "result": "Access granted"
-        }
+    return AgentResponse(
+        user_id=user_id,
+        query=query,
+        decision=decision,
+        result=response,
+        ticket_id=ticket_id,
+        steps=steps,
+        confidence=confidence
+    )
 
-    elif action == "create_ticket":
-        ticket = create_ticket(user_id, query)
-        return {
-            "action": action,
-            "result": "Access request submitted",
-            "ticket_id": ticket["ticket_id"]
-        }
+    # if "output" not in response:
+    #    return {
+    #        "result": "Agent failed, fallback triggered. Please contact support."
+    #    }
 
-    # fallback safety
-    ticket = create_ticket(user_id, query)
-    return {
-        "action": "fallback_ticket",
-        "result": "LLM unclear → ticket created",
-        "ticket_id": ticket["ticket_id"]
-    }
+    # return {
+    #    "result": response["output"]
+    #}
