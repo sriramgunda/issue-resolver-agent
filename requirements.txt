@@ -1,6 +1,7 @@
 # Web framework
 fastapi
 uvicorn[standard]
+sse-starlette        # SSE helper (optional but convenient for /stream)
 
 # LangChain 1.0
 langchain>=1.0.0
@@ -10,7 +11,7 @@ langchain-community>=0.3.0
 
 # RAG — vector store + embeddings
 faiss-cpu
-sentence-transformers          # fallback embeddings when Ollama unavailable
+sentence-transformers
 
 # Data validation
 pydantic>=2.0.0

@@ -1,46 +1,101 @@
 """
-FastAPI entrypoint for the Access Resolver Agent.
+FastAPI entrypoint — Access Resolver Agent + Investigation Agent.
 """
 
+import json
 from fastapi import FastAPI, HTTPException
-from app.models.schemas import UserQuery, AgentResponse
-from app.agent.agent import resolve_access
+from fastapi.responses import StreamingResponse
+
+from app.models.schemas import (
+    UserQuery, AgentResponse,
+    InvestigationQuery, InvestigationResponse,
+)
+from app.agent.agent import resolve_access, stream_resolve_access
+from app.agent.investigation_agent import investigate, stream_investigate
+from app.rag.retriever import rag_fast_path
 
 app = FastAPI(
-    title="Access Resolver Agent",
-    description="Agentic AI service that resolves access issues using Ollama + LangChain tool-calling.",
-    version="2.0.0",
+    title="Agentic Issue Resolver",
+    description="Access Resolver + Infrastructure Investigation — Ollama + LangChain tool-calling.",
+    version="4.0.0",
 )
 
 
+# ── Health ────────────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 
+# ── Access Resolver Agent ─────────────────────────────────────────────────────
 @app.post("/resolve", response_model=AgentResponse)
 def resolve(query: UserQuery) -> AgentResponse:
-    """
-    Resolve an access-related issue for the given user.
-
-    The agent will automatically call the appropriate tools
-    (check_account_locked, check_user_access, grant_access, create_ticket, …)
-    and return a structured response.
-    """
+    """Resolve an access-related issue. Uses RAG short-circuit for known FAQs."""
+    fast = rag_fast_path(query.query)
+    if fast:
+        return AgentResponse(user_id=query.user_id, query=query.query, **fast)
     try:
-        agent_result = resolve_access(query.user_id, query.query)
+        result = resolve_access(query.user_id, query.query)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return AgentResponse(user_id=query.user_id, query=query.query, **result)
+
+
+@app.post("/resolve/stream")
+async def resolve_stream(query: UserQuery):
+    """Streaming SSE variant of /resolve."""
+    fast = rag_fast_path(query.query)
+    if fast:
+        async def _fast():
+            yield f"data: {json.dumps(fast)}\n\n"
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(_fast(), media_type="text/event-stream")
+
+    async def _stream():
+        async for chunk in stream_resolve_access(query.user_id, query.query):
+            yield f"data: {chunk.replace(chr(10), '\\n')}\n\n"
+        yield "data: [DONE]\n\n"
+    return StreamingResponse(_stream(), media_type="text/event-stream")
+
+
+# ── Investigation Agent ───────────────────────────────────────────────────────
+@app.post("/investigate", response_model=InvestigationResponse)
+def investigate_issue(query: InvestigationQuery) -> InvestigationResponse:
+    """
+    Investigate an infrastructure issue: RDP failures, server down,
+    web URL errors, DB session failures, network/service issues.
+
+    Optional fields (server, url, db_instance) are appended to the query
+    so the agent has precise targets to check.
+    """
+    # Build an enriched query string from the optional hints
+    enriched = query.query
+    if query.server:      enriched += f" | server: {query.server}"
+    if query.url:         enriched += f" | url: {query.url}"
+    if query.db_instance: enriched += f" | db_instance: {query.db_instance}"
+
+    try:
+        result = investigate(query.user_id, enriched)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
-    # Merge request context into the response so all fields are populated
-    return AgentResponse(
-        intent=agent_result.get("intent", "unknown"),
-        action=agent_result.get("action", "none"),
-        result=agent_result.get("result", ""),
-        ticket_id=agent_result.get("ticket_id"),
+    return InvestigationResponse(
         user_id=query.user_id,
         query=query.query,
-        decision=agent_result.get("decision"),
-        steps=agent_result.get("steps"),
-        confidence=agent_result.get("confidence"),
+        **result,
     )
+
+
+@app.post("/investigate/stream")
+async def investigate_stream(query: InvestigationQuery):
+    """Streaming SSE variant of /investigate."""
+    enriched = query.query
+    if query.server:      enriched += f" | server: {query.server}"
+    if query.url:         enriched += f" | url: {query.url}"
+    if query.db_instance: enriched += f" | db_instance: {query.db_instance}"
+
+    async def _stream():
+        async for chunk in stream_investigate(query.user_id, enriched):
+            yield f"data: {chunk.replace(chr(10), '\\n')}\n\n"
+        yield "data: [DONE]\n\n"
+    return StreamingResponse(_stream(), media_type="text/event-stream")

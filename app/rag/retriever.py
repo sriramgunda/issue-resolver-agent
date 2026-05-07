@@ -1,21 +1,56 @@
 """
-RAG retriever exposed as a LangChain @tool so the agent can call it
-whenever it decides the user query might be answerable from the knowledge base.
+RAG retriever — exposed as a LangChain @tool AND as a direct fast-path function.
 
-Search strategy:
-  1. Cosine-similarity search against the FAISS FAQ index.
-  2. Only return results whose similarity score is above SIMILARITY_THRESHOLD.
-  3. Return the top-k answers formatted as a numbered list.
-  4. If nothing relevant is found, return a clear "no match" string so the
-     agent knows to fall back to the tool-calling resolution flow.
+Two usage modes:
+  1. search_knowledge_base(@tool) — called by the agent inside the tool-calling loop.
+  2. rag_fast_path() — called BEFORE the agent in main.py.
+     If confidence >= RAG_THRESHOLD, we return immediately without touching the LLM.
+     Typical latency: < 50 ms (pure vector similarity, no tokens generated).
 """
 
 from langchain_core.tools import tool
 from app.rag.vector_store import get_vector_store
+from app.config import RAG_THRESHOLD
 
-# Tune these via env vars if needed
 TOP_K = 3
-SIMILARITY_THRESHOLD = 0.65   # cosine distance; lower = more similar in FAISS
+
+
+def _search(query: str, k: int = TOP_K) -> list[tuple[float, object]]:
+    """Run similarity search; return (similarity, doc) pairs sorted best-first."""
+    store = get_vector_store()
+    raw = store.similarity_search_with_score(query, k=k)
+    hits = []
+    for doc, score in raw:
+        similarity = float(1.0 / (1.0 + score))   # cast numpy.float32 → Python float
+        hits.append((similarity, doc))
+    hits.sort(key=lambda x: x[0], reverse=True)
+    return hits
+
+
+def rag_fast_path(query: str) -> dict | None:
+    """
+    Attempt to answer the query purely from the knowledge base.
+
+    Returns a response dict (same shape as resolve_access()) if a high-confidence
+    match is found, or None if the agent should handle it instead.
+
+    Threshold is set via RAG_THRESHOLD env var (default 0.80).
+    """
+    hits = _search(query, k=1)
+    if not hits:
+        return None
+    similarity, doc = hits[0]
+    if similarity < RAG_THRESHOLD:
+        return None
+    return {
+        "intent":     "faq_match",
+        "action":     "knowledge_base_answer",
+        "result":     doc.metadata["answer"],
+        "ticket_id":  None,
+        "decision":   f"High-confidence FAQ match (relevance {similarity:.0%}): {doc.metadata['question']}",
+        "confidence": round(similarity, 3),
+        "steps":      ["search_knowledge_base"],
+    }
 
 
 @tool
@@ -23,42 +58,29 @@ def search_knowledge_base(query: str) -> str:
     """
     Search the internal FAQ / knowledge base for answers related to the user query.
 
-    Use this tool FIRST whenever the user describes a problem or asks a question
-    that might already have a documented solution (e.g. login issues, MFA problems,
-    VPN troubleshooting, access request procedures, password reset steps).
+    Use this tool FIRST whenever the user describes a problem that might already
+    have a documented solution (login issues, MFA, VPN, access requests, etc.).
 
     Args:
         query: The user's issue or question in natural language.
 
     Returns:
-        A formatted string with the top matching FAQ answers,
-        or "NO_MATCH" if no relevant entries were found.
+        Formatted string with top matching FAQ answers, or 'NO_MATCH'.
     """
-    store = get_vector_store()
-
-    # similarity_search_with_score returns (Document, score) pairs
-    # FAISS returns L2 distances — lower is better; convert to similarity
-    results = store.similarity_search_with_score(query, k=TOP_K)
-
-    hits = []
-    for doc, score in results:
-        # FAISS L2 distance → approximate cosine similarity (for normalised vectors)
-        similarity = 1.0 / (1.0 + score)
-        if similarity >= SIMILARITY_THRESHOLD:
-            hits.append((similarity, doc))
-
+    hits = _search(query)
     if not hits:
         return "NO_MATCH"
 
-    # Sort best-first
-    hits.sort(key=lambda x: x[0], reverse=True)
+    threshold = 0.65
+    filtered = [(s, d) for s, d in hits if s >= threshold]
+    if not filtered:
+        return "NO_MATCH"
 
-    lines = ["Here are the relevant solutions from the knowledge base:\n"]
-    for i, (sim, doc) in enumerate(hits, 1):
+    lines = ["Relevant solutions from the knowledge base:\n"]
+    for i, (sim, doc) in enumerate(filtered, 1):
         lines.append(
             f"{i}. Q: {doc.metadata['question']}\n"
             f"   A: {doc.metadata['answer']}\n"
             f"   (relevance: {sim:.0%}, category: {doc.metadata['category']})\n"
         )
-
     return "\n".join(lines)

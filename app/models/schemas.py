@@ -30,3 +30,26 @@ class AgentResponse(BaseModel):
     decision: Optional[str] = Field(default=None, description="Agent's final decision")
     steps: Optional[List[str]] = Field(default=None, description="Tool call steps executed")
     confidence: Optional[float] = Field(default=None, description="Agent confidence score (0-1)")
+
+
+# Investigation Agent schemas
+class InvestigationQuery(BaseModel):
+    user_id:  str
+    query:    str
+    server:   Optional[str] = None   # optional hints the caller can provide
+    url:      Optional[str] = None
+    db_instance: Optional[str] = None
+ 
+ 
+class InvestigationResponse(BaseModel):
+    issue_type:        str            = Field(default="unknown")
+    severity:          str            = Field(default="medium")
+    root_cause:        str            = Field(default="")
+    affected_resource: Optional[str]  = None
+    resolution:        str            = Field(default="")
+    ticket_raised:     bool           = False
+    ticket_id:         Optional[str]  = None
+    confidence:        float          = 0.0
+    steps:             Optional[List[str]] = None
+    user_id:           Optional[str]  = None
+    query:             Optional[str]  = None
