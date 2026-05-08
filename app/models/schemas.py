@@ -1,55 +1,82 @@
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Any
 
+
+# ── Shared request ─────────────────────────────────────────────────────────────
 class UserQuery(BaseModel):
     user_id: str
     query: str
 
-class AgentResponse_old(BaseModel):
-    intent: str
-    action: str
-    result: str
-    ticket_id: str | None = None
 
-class AgentStep(BaseModel):
-    step: str
-    status: str
-    details: Optional[str] = None
-
-
+# ── Access Resolver Agent ──────────────────────────────────────────────────────
 class AgentResponse(BaseModel):
-    # Core fields returned by resolve_access()
-    intent: str = Field(default="unknown", description="Classified intent of the issue")
-    action: str = Field(default="none", description="Action taken by the agent")
-    result: str = Field(default="", description="Human-readable outcome")
-    ticket_id: Optional[str] = Field(default=None, description="Ticket ID if one was raised")
- 
-    # Extended fields — optional, populated when available
-    user_id: Optional[str] = Field(default=None, description="User ID from the request")
-    query: Optional[str] = Field(default=None, description="Original query from the request")
-    decision: Optional[str] = Field(default=None, description="Agent's final decision")
-    steps: Optional[List[str]] = Field(default=None, description="Tool call steps executed")
-    confidence: Optional[float] = Field(default=None, description="Agent confidence score (0-1)")
+    intent:     str             = Field(default="unknown")
+    action:     str             = Field(default="none")
+    result:     str             = Field(default="")
+    ticket_id:  Optional[str]   = None
+    user_id:    Optional[str]   = None
+    query:      Optional[str]   = None
+    decision:   Optional[str]   = None
+    steps:      Optional[List[str]] = None
+    confidence: Optional[float]     = None
 
 
-# Investigation Agent schemas
+# ── Investigation Agent ────────────────────────────────────────────────────────
 class InvestigationQuery(BaseModel):
-    user_id:  str
-    query:    str
-    server:   Optional[str] = None   # optional hints the caller can provide
-    url:      Optional[str] = None
+    user_id:     str
+    query:       str
+    server:      Optional[str] = None
+    url:         Optional[str] = None
     db_instance: Optional[str] = None
- 
- 
+
+
 class InvestigationResponse(BaseModel):
-    issue_type:        str            = Field(default="unknown")
-    severity:          str            = Field(default="medium")
-    root_cause:        str            = Field(default="")
-    affected_resource: Optional[str]  = None
-    resolution:        str            = Field(default="")
-    ticket_raised:     bool           = False
-    ticket_id:         Optional[str]  = None
-    confidence:        float          = 0.0
+    issue_type:        str           = Field(default="unknown")
+    severity:          str           = Field(default="medium")
+    root_cause:        str           = Field(default="")
+    affected_resource: Optional[str] = None
+    resolution:        str           = Field(default="")
+    ticket_raised:     bool          = False
+    ticket_id:         Optional[str] = None
+    confidence:        float         = 0.0
     steps:             Optional[List[str]] = None
-    user_id:           Optional[str]  = None
-    query:             Optional[str]  = None
+    user_id:           Optional[str] = None
+    query:             Optional[str] = None
+
+
+# ── Router (unified) ───────────────────────────────────────────────────────────
+class RouterQuery(BaseModel):
+    """Single entry-point request — works for both agent types."""
+    user_id:     str
+    query:       str
+    # Optional resource hints forwarded to investigation agent if needed
+    server:      Optional[str] = None
+    url:         Optional[str] = None
+    db_instance: Optional[str] = None
+
+
+class RouterResponse(BaseModel):
+    """
+    Unified response envelope returned by POST /query.
+    Contains router metadata plus the fields from whichever agent handled it.
+    Unknown extra fields from agents are captured in 'extra'.
+    """
+    # Router metadata
+    agent_used:                str   = Field(default="unknown")
+    category:                  str   = Field(default="unknown")
+    classification_confidence: float = Field(default=0.0)
+    classification_reason:     str   = Field(default="")
+
+    # Common agent fields
+    user_id:    Optional[str]       = None
+    query:      Optional[str]       = None
+    result:     Optional[str]       = None      # access agent
+    resolution: Optional[str]       = None      # investigation agent
+    ticket_id:  Optional[str]       = None
+    steps:      Optional[List[str]] = None
+    confidence: Optional[float]     = None
+
+    # Ambiguous — supplementary result from the secondary agent
+    supplementary: Optional[Any]    = None
+
+    model_config = {"extra": "allow"}   # absorb any extra agent fields cleanly

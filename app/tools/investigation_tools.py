@@ -18,7 +18,7 @@ Replace the stub bodies with real API / SSH / monitoring calls.
 
 import random
 from langchain_core.tools import tool
-from app.data.infra_data import SERVER_NAMES, APPS, DB_INSTANCES, ENDPOINTS
+from data.data import SERVER_NAMES, APPS
 
 
 # ── RDP ───────────────────────────────────────────────────────────────────────

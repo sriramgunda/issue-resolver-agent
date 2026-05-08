@@ -13,3 +13,11 @@ if st.button("Resolve"):
     )
 
     st.json(res.json())
+
+if st.button("Investigate"):
+    res = requests.post(
+        "http://localhost:8000/investigate",
+        json={"user_id": user_id, "query": query}
+    )
+
+    st.json(res.json())
